@@ -1,4 +1,4 @@
-# 🚀 APEX GTR Analytics — Plataforma de Gestión en Tiempo Real con IA
+# APEX GTR Analytics — Plataforma de Gestión en Tiempo Real con IA
 
 Repositorio oficial del Trabajo de Grado:  
 **"Desarrollo de un Sistema Automatizado de Monitoreo, Análisis de KPIs y Alertas Inteligentes en Tiempo Real para la Gestión Operativa de un BPO"**

@@ -1,3 +1,35 @@
+"""
+========================================================================================
+MÓDULO ANALÍTICO DE INTELIGENCIA ARTIFICIAL: CAMPAÑA MIGRACIONES INBOUND
+Proyecto de Grado: Sistema Automatizado de Monitoreo GTR y Analítica Predictiva
+Operación: Apex America BPO (Telefonía de Entrada y Ventas Comerciales)
+Autor: Juan Guillermo Velasco Ahumada
+Director: Ing. Fabio Hernán Realpe Martínez | Asesor: Andrés Oicata Casas
+========================================================================================
+
+DESCRIPCIÓN DE MODELOS Y ALGORITMOS:
+1. Micro-anomalías Intradía (Isolation Forest):
+   - Aísla llamadas con desviaciones extremas de TMO (duraciones inusualmente cortas o largas).
+   - Detección de Venta Exprés Atípica (< 30s) cruzada con el reporte de ventas (Severidad ALTA:
+     posible fraude, bypass de script o error en tipificación antes de pago de comisiones).
+   - Detección de Desviaciones Extremas de TMO (> 900s o llamadas pegadas/parking).
+2. Proyección Horaria y Capacidad (Run-Rate / Tendencia Inercial):
+   - Proyecta el tráfico de llamadas en la hora subsiguiente (h + 1) comparando el ritmo de hoy vs ayer.
+   - Evalúa el riesgo de saturación frente al umbral de capacidad instalada (6.600 llamadas/hora).
+   - Seguimiento predictivo a la meta GTR de ventas acumuladas.
+3. Macro-anomalías Sistémicas (Isolation Forest en Franjas Horarias):
+   - Identifica horas atípicas a nivel de plataforma o conmutador PBX.
+4. Perfilamiento Táctico de Cierre EOD (Clustering K-Means con K=3):
+   - Cruce relacional bajo principio Single Source of Truth (SSOT) entre las llamadas atendidas
+     en 'base_llamadas_migraciones' y las ventas oficiales en 'base_ventas_migraciones'.
+   - Espacio vectorial: (Efectividad Comercial %, TMO Promedio).
+   - Categorización de asesores:
+     * Francotiradores (Alta Efectividad Comercial)
+     * Estándar (Conversadores / Ritmo Medio)
+     * Área de Oportunidad (Bajo Cierre Comercial o TMO atípico para coaching)
+========================================================================================
+"""
+
 import pandas as pd
 import numpy as np
 from sklearn.ensemble import IsolationForest

@@ -1,3 +1,28 @@
+"""
+========================================================================================
+APLICACIÓN WEB PRINCIPAL Y BACKEND FASTAPI: GTR ANALYTICS
+Proyecto de Grado: Sistema Automatizado de Monitoreo GTR y Analítica Predictiva
+Operación: Apex America BPO
+Autor: Juan Guillermo Velasco Ahumada
+Director: Ing. Fabio Hernán Realpe Martínez | Asesor: Andrés Oicata Casas
+========================================================================================
+
+DESCRIPCIÓN DE ARQUITECTURA:
+Backend asíncrono desarrollado sobre FastAPI que implementa el patrón Modelo-Vista-Controlador (MVC):
+1. Capa de Datos (Modelo):
+   - Conexión directa a Supabase Cloud (PostgreSQL) y consumo de Vistas SQL indexadas (`vw_*`).
+   - Principio Single Source of Truth (SSOT) para cálculo de KPIs sub-segundo (< 280 ms).
+2. Capa de Seguridad (Controlador):
+   - Autenticación mediante Supabase Auth con tokens JWT en cookies HttpOnly seguras.
+   - Control de Acceso Basado en Roles (RBAC):
+     * 'System Administrator': Acceso total + creación de usuarios y alta en nómina (`dim_agentes`).
+     * 'Lector / Operativo': Acceso restringido a tableros de visualización y monitoreo.
+3. Capa de Presentación (Vista):
+   - Motor de plantillas Jinja2 (`templates_ia/`) con componentes dinámicos en Chart.js y Bootstrap.
+   - Tiempo de primer byte (TTFB) de 185 ms y renderizado completo en 340 ms.
+========================================================================================
+"""
+
 import os
 from dotenv import load_dotenv
 

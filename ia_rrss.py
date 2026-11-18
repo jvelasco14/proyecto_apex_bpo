@@ -1,3 +1,33 @@
+"""
+========================================================================================
+MÓDULO ANALÍTICO DE INTELIGENCIA ARTIFICIAL: CANALES DIGITALES (REDES SOCIALES)
+Proyecto de Grado: Sistema Automatizado de Monitoreo GTR y Analítica Predictiva
+Operación: Apex America BPO (Atención Digital Multicanal: WhatsApp, Web, RRSS y NPS)
+Autor: Juan Guillermo Velasco Ahumada
+Director: Ing. Fabio Hernán Realpe Martínez | Asesor: Andrés Oicata Casas
+========================================================================================
+
+DESCRIPCIÓN DE MODELOS Y ALGORITMOS:
+1. Micro-anomalías en Mensajería (Isolation Forest):
+   - Aísla conversaciones con tiempos atípicos (duración de sesión, esperas prolongadas).
+   - Detección de Chats Zombies (> 1.800s a 3.600s de interacción sin cierre) que bloquean
+     la concurrencia de atención del asesor en la consola Cari AI.
+2. Analítica Predictiva Intradía:
+   - Proyección de volumen de chats para la hora subsiguiente (h + 1) vs capacidad de planta.
+   - Monitoreo y alerta de degradación de Tiempo de Primera Respuesta (TPR) para salvaguardar el SLA.
+3. Perfilamiento Táctico de Cierre EOD (K-Means con Feature Weighting 3.0x en Calidad):
+   - Desafío de negocio: los tiempos de chat presentan una alta varianza natural (60 a 1.800s)
+     debido a la asincronía del cliente. La velocidad no es sinónimo de resolución.
+   - Solución algorítmica: matriz de pesos diagonales W con factor 3.0x sobre el porcentaje
+     de promotores NPS (calidad), evitando que el TMO opaque la excelencia en satisfacción:
+     J_W = sum( || W * (x_i - mu_k) ||^2 )
+   - Clasificación de asesores:
+     * Resolutivos Estrella (Alta Calidad NPS > 85%)
+     * Estándar Digital (Rendimiento Medio)
+     * En Riesgo de Calidad / Oportunidad (Bajo NPS o TMO extremo)
+========================================================================================
+"""
+
 import pandas as pd
 import numpy as np
 from sklearn.ensemble import IsolationForest

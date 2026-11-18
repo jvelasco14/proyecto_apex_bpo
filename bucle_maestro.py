@@ -1,3 +1,41 @@
+"""
+========================================================================================
+ORQUESTADOR CENTRAL DEL PIPELINE E2E (BUCLE MAESTRO INTRADÍA)
+Proyecto de Grado: Sistema Automatizado de Monitoreo GTR y Analítica Predictiva
+Operación: Apex America BPO (Campaña Inbound Migraciones, Outbound Retenciones, RRSS)
+Autor: Juan Guillermo Velasco Ahumada
+Director: Ing. Fabio Hernán Realpe Martínez | Asesor: Andrés Oicata Casas
+========================================================================================
+
+DESCRIPCIÓN DE ARQUITECTURA:
+Este módulo actúa como el cerebro orquestador del sistema bajo Arquitectura Lambda.
+Gobierna el flujo cíclico intradía continuo y desacoplado:
+
+1. RPA Playwright (`bot_scraper.py`):
+   - Extrae desatendidamente los cortes horarios desde Cari AI / Inconcert.
+2. Motor ETL (`motor_etl.py`):
+   - Normaliza, limpia y persiste transacciones en la Capa Speed (tablas vivas) de PostgreSQL.
+3. Inteligencia Artificial Intradía (`ia_migraciones.py`, `ia_retenciones.py`, `ia_rrss.py`):
+   - Detección de micro-anomalías individuales por asesor (Isolation Forest).
+   - Proyección de demanda y fatiga de base (Run-Rate Forecasting).
+   - Detección de riesgos de saturación frente a capacidad instalada (6.600 llam/h).
+4. Cierres Escalonados por Campaña (Gobernanza Anti-Deadlocks):
+   - 15:00 hrs -> Cierre de Retenciones Outbound (Migración a `hist_base_rete_out` + K-Means).
+   - 16:00 hrs -> Cierre de Redes Sociales (Migración a tablas `hist_*` + K-Means con Feature Weighting).
+   - 17:00 hrs -> Cierre de Migraciones Inbound (Migración a tablas `hist_*` + K-Means comercial con SSOT).
+   El desacoplamiento horario previene la contención de bloqueos (deadlocks) y picos de memoria RAM.
+5. Reinicio Nocturno y Gobernanza de Datos:
+   - Purga de la Capa Speed (tablas vivas a cero) para el inicio de la siguiente jornada.
+   - En modo producción, preserva íntegramente la memoria histórica en las tablas `hist_*`.
+
+MODOS DE OPERACIÓN:
+- MODO_PRODUCCION=true: Esperas reales de 1 hora (3600s), reposo nocturno hasta medianoche,
+  sin eliminación de históricos.
+- MODO_PRODUCCION=false (Modo Evaluación / Tesis): Simulación acelerada de cortes horarios
+  para demostración interactiva ante jurados con fecha calibrada '2025-06-26'.
+========================================================================================
+"""
+
 import os
 import time
 import requests
@@ -12,26 +50,28 @@ from ia_migraciones import analizar_migraciones
 from ia_retenciones import analizar_retenciones
 from ia_rrss import analizar_rrss
 
-# ==========================================
-# ⚙️ CONFIGURACIÓN DEL ORQUESTADOR
-# ==========================================
-API_URL = "http://127.0.0.1:5000/api/set_hora/"
+# =============================================================================
+# ⚙️ PARÁMETROS DE CONFIGURACIÓN DEL ORQUESTADOR
+# =============================================================================
+API_URL = os.getenv("CARI_API_URL", "http://127.0.0.1:5000/api/set_hora/")
+DATABASE_URL = os.getenv(
+    "DATABASE_URL", 
+    "postgresql+psycopg2://postgres.vdvmyueufdfviztmribf:Velasco14062000**@aws-1-us-east-1.pooler.supabase.com:5432/postgres"
+)
+MODO_PRODUCCION = os.getenv("MODO_PRODUCCION", "false").lower() == "true"
 
-# Lotes de extracción simulados en Cari AI
-LOTE_INICIAL = 6   # Simula las 06:00 (Genera corte hasta 06:59) -> Corre a las 07:00 físicas
-LOTE_FINAL = 16    # Simula las 16:00 (Genera corte hasta 16:59) -> Corre a las 17:00 físicas
+# Ventana operativa del contact center: Lote 06 (06:00-06:59 extraído a las 07:00) a Lote 16 (16:00-16:59 extraído a las 17:00)
+LOTE_INICIAL = 6   
+LOTE_FINAL = 16    
 
-TIEMPO_ESPERA_ENTRE_HORAS = 60    # MODO TESIS: Segundos rápidos entre horas para la demostración
-# TIEMPO_ESPERA_ENTRE_HORAS = 3600 # MODO PRODUCCIÓN: Descomentar para esperar 60 minutos reales
+# Tiempos de espera entre cortes horarios
+TIEMPO_ESPERA_ENTRE_HORAS = 3600 if MODO_PRODUCCION else 60
+TIEMPO_ESPERA_REINICIO = 300  # Pausa de 5 minutos al cierre de demostración
 
-TIEMPO_ESPERA_REINICIO = 300    # MODO TESIS: 5 minutos de pausa al final de la jornada
-
-DB_URL = "postgresql+psycopg2://postgres.vdvmyueufdfviztmribf:Velasco14062000**@aws-1-us-east-1.pooler.supabase.com:5432/postgres"
-
-# FECHA QUEMADA DE PRUEBA (Para evitar que se borre el verdadero histórico de Supabase)
+# Fecha de calibración experimental para evaluación empírica
 FECHA_PRUEBA = '2025-06-26'
 
-# Tablas de la Capa Viva que SIEMPRE se vacían al 100% cada día a la medianoche (Capa Speed)
+# Tablas transaccionales de la Capa Speed (vivas) que se vacían al inicio de cada jornada
 TABLAS_VIVAS = [
     'base_llamadas_migraciones',
     'base_ventas_migraciones',
@@ -41,11 +81,17 @@ TABLAS_VIVAS = [
     'chats_monetizacion_rrss'
 ]
 
-# ==========================================
-# 📦 FUNCIONES DE CIERRE ESCALONADO
-# ==========================================
+
+# =============================================================================
+# 📦 FUNCIONES DE CIERRE ESCALONADO POR CAMPAÑA
+# =============================================================================
+
 def cierre_retenciones(engine, tz):
-    print("\n📦 [15:00] CIERRE RETENCIONES: Copiando tabla viva al histórico...")
+    """
+    Ejecuta el cierre de jornada para Retenciones Outbound a las 15:00 hrs.
+    Copia los registros vivos a la tabla histórica y dispara el clustering K-Means.
+    """
+    print("\n📦 [15:00] CIERRE RETENCIONES: Copiando tabla viva al histórico persistente...")
     try:
         with engine.begin() as conn:
             query_rete = """
@@ -63,16 +109,22 @@ def cierre_retenciones(engine, tz):
             conn.execute(text(query_rete))
             print("   ✅ Migración de datos al histórico completada.")
             
-        print("🧠 Ejecutando IA de Cierre (K-Means) para Retenciones...")
+        print("🧠 Ejecutando modelo de Machine Learning (K-Means) para Retenciones...")
         analizar_retenciones(engine, 'cierre', tz)
-        print("   ✅ Cierre de Retenciones completado.")
-    except Exception as e: print(f"   ❌ Error en cierre de Retenciones: {e}")
+        print("   ✅ Cierre de Retenciones completado con éxito.")
+    except Exception as e: 
+        print(f"   ❌ Error en cierre de Retenciones: {e}")
+
 
 def cierre_rrss(engine, tz):
+    """
+    Ejecuta el cierre de jornada para Redes Sociales a las 16:00 hrs.
+    Transfiere chats, encuestas NPS y tipificaciones a las tablas históricas y dispara K-Means.
+    """
     print("\n📦 [16:00] CIERRE REDES SOCIALES: Copiando tablas vivas al histórico...")
     try:
         with engine.begin() as conn:
-            # 1. Migración de Chats Monetización
+            # 1. Migración de Chats y Monetización
             query_chats = """
             INSERT INTO hist_chats_monetizacion_rrss (
                 id_original, "cola_de_atención", "id_conversación", bot, canal, 
@@ -93,7 +145,7 @@ def cierre_rrss(engine, tz):
             """
             conn.execute(text(query_chats))
             
-            # 2. Migración de NPS
+            # 2. Migración de Encuestas de Satisfacción (NPS)
             query_nps = """
             INSERT INTO hist_base_nps_rrss (
                 id_cliente, bot, fecha_de_registro, "id_de_conversación", "id_conversación_con_agente", 
@@ -112,7 +164,7 @@ def cierre_rrss(engine, tz):
             """
             conn.execute(text(query_nps))
             
-            # 3. Migración de Tipificaciones
+            # 3. Migración de Tipificaciones Operativas
             query_tipificaciones = """
             INSERT INTO hist_base_tipificaciones_rrss (
                 id_cliente, fecha_de_registro, "id_conversación", canal, id_solicitud_pendiente, 
@@ -126,16 +178,22 @@ def cierre_rrss(engine, tz):
             conn.execute(text(query_tipificaciones))
             print("   ✅ Migración de datos al histórico completada.")
             
-        print("🧠 Ejecutando IA de Cierre (K-Means) para Redes Sociales...")
+        print("🧠 Ejecutando modelo de Machine Learning (K-Means con Feature Weighting 3.0x) para Redes Sociales...")
         analizar_rrss(engine, 'cierre', tz)
         print("   ✅ Cierre de Redes Sociales completado.")
-    except Exception as e: print(f"   ❌ Error en cierre de RRSS: {e}")
+    except Exception as e: 
+        print(f"   ❌ Error en cierre de RRSS: {e}")
+
 
 def cierre_migraciones(engine, tz):
+    """
+    Ejecuta el cierre de jornada para Migraciones Inbound a las 17:00 hrs.
+    Transfiere llamadas y ventas a las tablas históricas y dispara el clustering comercial.
+    """
     print("\n📦 [17:00] CIERRE MIGRACIONES: Copiando tablas vivas al histórico...")
     try:
         with engine.begin() as conn:
-            # 1. Migración de Llamadas de Migraciones
+            # 1. Migración de Llamadas de Voz Inbound
             query_llamadas = """
             INSERT INTO hist_base_llamadas_migraciones (
                 call_id, date, "time", call_type, campaign, agent, ani, dnis, 
@@ -150,7 +208,7 @@ def cierre_migraciones(engine, tz):
             """
             conn.execute(text(query_llamadas))
             
-            # 2. Migración de Ventas de Migraciones
+            # 2. Migración de Ventas Validadas
             query_ventas = """
             INSERT INTO hist_base_ventas_migraciones (
                 marca_temporal, nombre_del_asesor, cedula_del_agente, msisdn, 
@@ -170,59 +228,53 @@ def cierre_migraciones(engine, tz):
             conn.execute(text(query_ventas))
             print("   ✅ Migración de datos al histórico completada.")
             
-        print("🧠 Ejecutando IA de Cierre (K-Means) para Migraciones...")
+        print("🧠 Ejecutando modelo de Machine Learning (K-Means comercial con SSOT) para Migraciones...")
         analizar_migraciones(engine, 'cierre', tz)
         print("   ✅ Cierre de Migraciones completado.")
-    except Exception as e: print(f"   ❌ Error en cierre de Migraciones: {e}")
+    except Exception as e: 
+        print(f"   ❌ Error en cierre de Migraciones: {e}")
 
 
-# ==========================================
-# 🧹 FUNCIÓN DE REINICIO NOCTURNO
-# ==========================================
+# =============================================================================
+# 🧹 FUNCIÓN DE REINICIO NOCTURNO Y PURGA DE CAPA SPEED
+# =============================================================================
+
 def reiniciar_entorno(engine):
+    """
+    Ejecuta el mantenimiento de medianoche:
+    - Trunca las tablas vivas (Capa Speed) para recibir el nuevo día sin registros residuales.
+    - En modo evaluación/tesis, limpia selectivamente la fecha de prueba para permitir repetición del ciclo.
+    - Limpia los directorios locales de trabajo temporal.
+    """
     print("\n🧹 [REINICIO NOCTURNO] Aplicando limpieza de la Capa Speed (Vivas)...")
     try:
         with engine.begin() as conn:
-            # 1. Truncar (vaciar a cero) todas las tablas de la Capa Viva para el nuevo día
+            # 1. Truncar (vaciar a cero) todas las tablas de la Capa Speed para el nuevo día
             for tabla in TABLAS_VIVAS:
                 conn.execute(text(f"TRUNCATE TABLE {tabla};"))
-            print("   ✅ Capa Speed (Vivas) vaciada correctamente.")
+            print("   ✅ Capa Speed (Vivas) vaciada correctamente para la nueva jornada.")
             
-            # =========================================================
-            # ⚠️ LÓGICA DE PRUEBA: BORRADO DE HISTÓRICOS (MODO TESIS)
-            # =========================================================
-            # NOTA PARA PRODUCCIÓN: Eliminar o comentar este bloque en el entorno real.
-            # En producción NUNCA se borran los históricos, ya que son la memoria del BPO.
-            
-            # 📞 Migraciones Histórico (Llamadas y Ventas)
-            conn.execute(text(f"DELETE FROM hist_base_llamadas_migraciones WHERE date = '{FECHA_PRUEBA}';"))
-            conn.execute(text(f"DELETE FROM hist_base_llamadas_migraciones WHERE date = '2025-05-26';"))
-            conn.execute(text(f"DELETE FROM hist_base_ventas_migraciones WHERE fecha_de_venta = '{FECHA_PRUEBA}';"))
-            
-            # 📞 Retenciones Histórico
-            conn.execute(text(f"DELETE FROM hist_base_rete_out WHERE date = '{FECHA_PRUEBA}';"))
-            
-            # 💬 Redes Sociales Histórico (Sincronizado con las columnas reales: fecha_de_registro)
-            conn.execute(text(f"DELETE FROM hist_chats_monetizacion_rrss WHERE CAST(fecha_inicio AS TEXT) LIKE '{FECHA_PRUEBA}%';"))
-            conn.execute(text(f"DELETE FROM hist_base_nps_rrss WHERE CAST(fecha_de_registro AS TEXT) LIKE '{FECHA_PRUEBA}%';"))
-            conn.execute(text(f"DELETE FROM hist_base_tipificaciones_rrss WHERE CAST(fecha_de_registro AS TEXT) LIKE '{FECHA_PRUEBA}%';"))
-            
-            # 🧠 Clustering K-Means (Perfilamiento de agentes)
-            conn.execute(text(f"DELETE FROM ml_insights_migraciones WHERE fecha_analisis = '{FECHA_PRUEBA}';"))
-            conn.execute(text(f"DELETE FROM ml_insights_retenciones WHERE fecha_analisis = '{FECHA_PRUEBA}';"))
-            conn.execute(text(f"DELETE FROM ml_insights_rrss WHERE fecha_analisis = '{FECHA_PRUEBA}';"))
-            
-            # 🚨 Isolation Forest & Anomalías Macro (Alertas)
-            conn.execute(text(f"DELETE FROM ml_alertas_globales WHERE call_date = '{FECHA_PRUEBA}';"))
-            conn.execute(text(f"DELETE FROM ml_alertas_macro WHERE call_date = '{FECHA_PRUEBA}';"))
-            
-            print(f"   ✅ Limpieza selectiva del histórico ({FECHA_PRUEBA}) completada.")
-            # =========================================================
-            
+            # En modo evaluación/tesis, permitir repetir la demostración limpiando la fecha calibrada
+            if not MODO_PRODUCCION:
+                conn.execute(text(f"DELETE FROM hist_base_llamadas_migraciones WHERE date = '{FECHA_PRUEBA}';"))
+                conn.execute(text(f"DELETE FROM hist_base_llamadas_migraciones WHERE date = '2025-05-26';"))
+                conn.execute(text(f"DELETE FROM hist_base_ventas_migraciones WHERE fecha_de_venta = '{FECHA_PRUEBA}';"))
+                conn.execute(text(f"DELETE FROM hist_base_rete_out WHERE date = '{FECHA_PRUEBA}';"))
+                conn.execute(text(f"DELETE FROM hist_chats_monetizacion_rrss WHERE CAST(fecha_inicio AS TEXT) LIKE '{FECHA_PRUEBA}%';"))
+                conn.execute(text(f"DELETE FROM hist_base_nps_rrss WHERE CAST(fecha_de_registro AS TEXT) LIKE '{FECHA_PRUEBA}%';"))
+                conn.execute(text(f"DELETE FROM hist_base_tipificaciones_rrss WHERE CAST(fecha_de_registro AS TEXT) LIKE '{FECHA_PRUEBA}%';"))
+                conn.execute(text(f"DELETE FROM ml_insights_migraciones WHERE fecha_analisis = '{FECHA_PRUEBA}';"))
+                conn.execute(text(f"DELETE FROM ml_insights_retenciones WHERE fecha_analisis = '{FECHA_PRUEBA}';"))
+                conn.execute(text(f"DELETE FROM ml_insights_rrss WHERE fecha_analisis = '{FECHA_PRUEBA}';"))
+                conn.execute(text(f"DELETE FROM ml_alertas_globales WHERE call_date = '{FECHA_PRUEBA}';"))
+                conn.execute(text(f"DELETE FROM ml_alertas_macro WHERE call_date = '{FECHA_PRUEBA}';"))
+                print(f"   ✅ Limpieza selectiva de calibración ({FECHA_PRUEBA}) completada para nueva prueba.")
+
     except Exception as e:
         print(f"   ❌ Error en el reinicio de la base de datos: {e}")
 
-    print("\n🗑️ Vaciando carpetas locales de procesamiento...")
+    # Limpieza de carpetas temporales locales
+    print("\n🗑️ Limpiando carpetas locales de trabajo...")
     carpetas = ['descargas_bot', 'historico_procesados']
     for carpeta in carpetas:
         if os.path.exists(carpeta):
@@ -231,53 +283,60 @@ def reiniciar_entorno(engine):
                 try:
                     if os.path.isfile(ruta_archivo): os.unlink(ruta_archivo)
                 except Exception: pass
-    print("   ✅ Carpetas locales limpias. El sistema está listo para un nuevo día.")
+    print("   ✅ Directorios locales limpios. El sistema está listo para un nuevo día.")
 
-# ==========================================
-# 🚀 MOTOR PRINCIPAL
-# ==========================================
+
+# =============================================================================
+# 🚀 MOTOR PRINCIPAL DE EJECUCIÓN CONTINUA
+# =============================================================================
+
 def iniciar_orquestador():
+    """
+    Punto de entrada principal del orquestador.
+    Mantiene el ciclo de ejecución continua hora a hora durante el turno operativo.
+    """
     print("===================================================")
     print(" 🚀 INICIANDO ORQUESTADOR CENTRAL (Arquitectura Lambda)")
+    print(f"    Modo: {'PRODUCCIÓN CONTINUA' if MODO_PRODUCCION else 'EVALUACIÓN EXPERIMENTAL (DEMO)'}")
     print("===================================================")
     
-    engine = create_engine(DB_URL)
+    engine = create_engine(DATABASE_URL)
     tz_colombia = pytz.timezone('America/Bogota')
     
     while True: 
-        # Ciclo intradía
+        # Ciclo intradía: desde las 07:00 (Lote 6) hasta las 17:00 (Lote 16)
         for lote in range(LOTE_INICIAL, LOTE_FINAL + 1):
             hora_fisica_ejecucion = lote + 1 
             lote_str = str(lote).zfill(2)
             hora_fisica_str = str(hora_fisica_ejecucion).zfill(2)
             
             print(f"\n" + "="*60)
-            print(f" 🕒 HORA DEL ROBOT: {hora_fisica_str}:00 | Extrayendo corte de {lote_str}:59")
+            print(f" 🕒 HORA DEL ROBOT: {hora_fisica_str}:00 | Procesando corte de {lote_str}:59")
             print("="*60)
             
-            # 1. Avanzar el reloj del Simulador Cari AI (Modo Prueba)
-            # En producción, esto no es necesario si el bot extrae la "última hora" del CRM real.
-            try:
-                requests.get(f"{API_URL}{lote_str}")
-            except Exception as e:
-                print(f"❌ Error conectando a Cari AI. Asegúrate de tener app_dashboard.py corriendo: {e}")
-                return 
+            # 1. En modo evaluación, avanzar el reloj de la plataforma simuladora
+            if not MODO_PRODUCCION:
+                try:
+                    requests.get(f"{API_URL}{lote_str}", timeout=5)
+                except Exception as e:
+                    print(f"❌ Error conectando a Cari AI. Asegúrate de tener app_dashboard.py corriendo: {e}")
+                    return 
 
-            # 2. RPA: Extraer la data
+            # 2. RPA: Extracción autónoma de los 6 reportes transaccionales
             with sync_playwright() as playwright:
                 bot_scraper.run(playwright, es_fin_de_dia=(lote == LOTE_FINAL))
             
-            # 3. ETL: Limpiar, transformar y subir a tablas vivas
+            # 3. ETL: Limpieza, imputación y carga en la Capa Speed
             print(f"\n⚙️ Despertando Motor ETL para la hora {hora_fisica_str}:00...")
             motor_etl.ejecutar_etl()
             
-            # 4. INTELIGENCIA ARTIFICIAL (Modo Horario)
-            print(f"\n🔍 Ejecutando Motores de IA Horaria (Micro-anomalías y Predictivo)...")
+            # 4. INTELIGENCIA ARTIFICIAL: Detección de anomalías y predicción horaria
+            print(f"\n🔍 Ejecutando Motores de IA Horaria (Micro-anomalías y Run-Rate)...")
             analizar_migraciones(engine, 'horario', tz_colombia)
             analizar_retenciones(engine, 'horario', tz_colombia)
             analizar_rrss(engine, 'horario', tz_colombia)
             
-            # 5. CIERRES ESCALONADOS
+            # 5. GOBERNANZA DE CIERRES ESCALONADOS
             if hora_fisica_ejecucion == 15:
                 cierre_retenciones(engine, tz_colombia)
             
@@ -286,40 +345,29 @@ def iniciar_orquestador():
                 
             elif hora_fisica_ejecucion == 17:
                 cierre_migraciones(engine, tz_colombia)
-                
                 print(f"\n🌙 TODAS LAS OPERACIONES FINALIZADAS (17:00 HRS).")
                 
-                # =========================================================
-                # ⚠️ LÓGICA DE REPOSO NOCTURNO Y REINICIO
-                # =========================================================
+                # Gestión de reposo nocturno
+                if MODO_PRODUCCION:
+                    ahora = datetime.now(tz_colombia)
+                    medianoche = ahora.replace(hour=23, minute=59, second=59, microsecond=0)
+                    segundos_hasta_medianoche = max(0, (medianoche - ahora).total_seconds())
+                    print(f"⏳ [PRODUCCIÓN] Reposo nocturno activo. Despertando a las 23:59:59 ({int(segundos_hasta_medianoche/3600)} h restantes)...")
+                    time.sleep(segundos_hasta_medianoche)
+                else:
+                    print(f"⏳ [EVALUACIÓN] Pausa de demostración de {TIEMPO_ESPERA_REINICIO/60} minutos...")
+                    time.sleep(TIEMPO_ESPERA_REINICIO)
                 
-                # --- MODO TESIS (Simulación Rápida) ---
-                print(f"⏳ [MODO TESIS] Entrando en reposo de {TIEMPO_ESPERA_REINICIO/60} minutos...")
-                time.sleep(TIEMPO_ESPERA_REINICIO)
-                
-                # --- MODO PRODUCCIÓN REAL (Descomentar en la vida real) ---
-                # Esta lógica calcula exactamente cuántos segundos faltan 
-                # desde el momento actual hasta las 23:59:59 y pone el script a dormir.
-                #
-                # ahora = datetime.now(tz_colombia)
-                # medianoche = ahora.replace(hour=23, minute=59, second=59, microsecond=0)
-                # segundos_hasta_medianoche = (medianoche - ahora).total_seconds()
-                #
-                # if segundos_hasta_medianoche > 0:
-                #     print(f"⏳ [MODO PRODUCCIÓN] Reposo. Despertando a las 23:59:59 (Faltan {int(segundos_hasta_medianoche/3600)} horas)...")
-                #     time.sleep(segundos_hasta_medianoche)
-                
-                # =========================================================
-                
-                # Ejecutar el vaciado de tablas vivas (y borrado condicionado de prueba)
+                # Limpieza de fin de ciclo y preparación de la siguiente jornada
                 reiniciar_entorno(engine)
                 print("\n🌅 ¡Fin de ciclo! Iniciando un nuevo día operativo...")
-                break # Rompe el for para reiniciar el while principal (Nuevo día)
+                break
                 
-            # 6. Pausa normal entre horas intradía
+            # 6. Pausa normal entre cortes horarios
             if hora_fisica_ejecucion < 17:
                 print(f"\n⏳ Ciclo de las {hora_fisica_str}:00 completado. Esperando {TIEMPO_ESPERA_ENTRE_HORAS}s...")
                 time.sleep(TIEMPO_ESPERA_ENTRE_HORAS)
+
 
 if __name__ == "__main__":
     iniciar_orquestador()

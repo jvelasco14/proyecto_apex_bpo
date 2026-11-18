@@ -1,4 +1,45 @@
+# Entorno y credenciales
 venv/
 __pycache__/
 *.pyc
 .env
+
+# Herramientas locales y ejecutables
+tools/
+scratch/
+compile_log.txt
+
+# Pruebas y renders temporales de figuras
+test_*
+check_*.png
+crop_*.png
+capitulo5_*.png
+chapter6_*.png
+figura3_2_*.png
+main_page_*.png
+monografia_page_*.png
+find_fig3_2_page.py
+build_test_table.py
+apendice_manual_usuario.tex
+
+# Entregables y fuentes LaTeX de monografía
+*.zip
+Monografia_Final_Consolidada.pdf
+monografia_latex/
+monografia_latex_original/
+sync_deliverables.py
+
+# Marco stele y metadatos de agente
+.stele/
+history/
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+guia-agente.md
+memory.md
+protocol.md
+requirements.md
+architecture.md
+design.md
+manual.md
+stele.config.md

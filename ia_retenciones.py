@@ -1,3 +1,31 @@
+"""
+========================================================================================
+MÓDULO ANALÍTICO DE INTELIGENCIA ARTIFICIAL: CAMPAÑA RETENCIONES OUTBOUND
+Proyecto de Grado: Sistema Automatizado de Monitoreo GTR y Analítica Predictiva
+Operación: Apex America BPO (Telefonía Saliente y Retención de Clientes en Fuga)
+Autor: Juan Guillermo Velasco Ahumada
+Director: Ing. Fabio Hernán Realpe Martínez | Asesor: Andrés Oicata Casas
+========================================================================================
+
+DESCRIPCIÓN DE MODELOS Y ALGORITMOS:
+1. Micro-anomalías Intradía (Isolation Forest):
+   - Monitorea desviaciones en llamadas salientes persuasivas.
+   - Detección de inconsistencias entre TMO prolongado y tipificación de 'No Contactado' o buzón.
+2. Analítica Predictiva Intradía:
+   - Proyección de Cierre Diario (Run-Rate): estima las retenciones acumuladas al corte de las 15:00 hrs
+     con base en la velocidad de efectividad por hora transcurrida.
+   - Detección de Fatiga de Base Outbound (Cold-Start Alert): alerta si la tasa de retención por asesor
+     en la franja horaria cae más de un 30% respecto al rendimiento promedio de la mañana, indicando
+     agotamiento de la lista de marcación o necesidad de inyección de nueva base por el supervisor.
+3. Perfilamiento Táctico de Cierre EOD (Clustering K-Means con K=3):
+   - Espacio vectorial: (Tasa de Retención Efectiva %, TMO Promedio Saliente).
+   - Clasificación de asesores:
+     * Cerradores Estrella (Alta Tasa de Retención)
+     * Negociadores Promedio (Rendimiento Estándar)
+     * Área de Oportunidad (Baja Retención o Dificultad de Negociación)
+========================================================================================
+"""
+
 import pandas as pd
 import numpy as np
 from sklearn.ensemble import IsolationForest

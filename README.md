@@ -39,14 +39,6 @@ Ecosistema integral diseñado para sustituir los flujos manuales ofimáticos en 
 - **Usuario:** `juradosunicauca@apexamerica.com`
 - **Contraseña:** `Clave2026+*`
 - **Rol:** `System Administrator` (Acceso total a monitoreo RT, cierres EOD, modelos IA y administración).
-
-### 2. Base de Datos Cloud (Supabase / PostgreSQL)
-- **Consola Web:** [https://supabase.com/dashboard/project/vdvmyueufdfviztmribf](https://supabase.com/dashboard/project/vdvmyueufdfviztmribf)
-- **Host / Puerto / BD:** `aws-1-us-east-1.pooler.supabase.com` : `5432` / `postgres`
-- **Usuario / Contraseña:** `postgres.vdvmyueufdfviztmribf` / `Velasco14062000**`
-- **Cadena Directa (DBeaver / pgAdmin):**  
-  `postgresql://postgres.vdvmyueufdfviztmribf:Velasco14062000**@aws-1-us-east-1.pooler.supabase.com:5432/postgres`
-
 ---
 
 ## ⚡ Ejecución Local Rápida
